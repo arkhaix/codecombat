@@ -14,11 +14,20 @@ var TARGET_LENGTH = {};
 TARGET_LENGTH[OGRE_TEAM] = GRID_HEIGHT;
 TARGET_LENGTH[HUMAN_TEAM] = GRID_WIDTH;
 
-var SEARCH_DEPTH = 2;
+var SEARCH_DEPTH = 1;
 
 var BASE_SCORES = null;
 
 var PROXIMITY_DELTAS = null;
+
+var getTilePosition = {};
+getTilePosition[HUMAN_TEAM] = function(t) { return t.x; };
+getTilePosition[OGRE_TEAM] = function(t) { return t.y; };
+
+var addTilePosition = {};
+addTilePosition[HUMAN_TEAM] = function(x,y,i) { return {'x':x+i, 'y':y } };
+addTilePosition[OGRE_TEAM] = function(x,y,i) { return {'x':x, 'y':y+i } };
+
 
 function makeGrid() {
     var result = [];
@@ -148,10 +157,6 @@ function getLongestPaths() {
 	result[HUMAN_TEAM] = 0;
 	result[OGRE_TEAM] = 0;
 
-	var getTilePosition = {};
-	getTilePosition[HUMAN_TEAM] = function(t) { return t.x; };
-	getTilePosition[OGRE_TEAM] = function(t) { return t.y; };
-
 	var visited = makeGrid.call(this);
 	for (var y=0;y<GRID_HEIGHT;y++) {
 		for (var x=0;x<GRID_WIDTH;x++) {
@@ -185,126 +190,111 @@ function getLongestPaths() {
 }
 
 // If {@param tile} param becomes owned by {@param team}, how
-// long is the new path?  {@param getTilePosition} exists so that
-// 'length' can mean either x-axis or y-axis distance by returning
-// tile.x or tile.y.  An example:
-// a 0 0 0
-// a a 0 0
-// 0 t a a
-// Assuming {@param tile} is the tile at 't', and {@param team}
-// is the team represented by 'a', and {@param getTilePosition}
-// returns Tile.x, then this function would return 4.
-// Without this tile, there would be two segments, both with length
-// 2: the three a's in the top-left cover two columns, and the two 
-// a's in the bottom-right also cover two columns.  If the 'a' team
-// gains the tile 't', then the new path would connect all 4 columns.
-// If {@param getTilePosition} returns Tile.y, then the function would
-// return 3 since the connected segments would now cover all 3 rows.
-function pathLengthIfTileConnects(newTile, newTeam) {
-	var result = {};
-	result[HUMAN_TEAM] = 0;
-	result[OGRE_TEAM] = 0;
+// long is the new path?
+var memo = {};
+function pathLengthIfTileConnects(tile, team) {
+	memo[tile.x] = memo[tile.x] || {};
+	memo[tile.x][tile.y] = memo[tile.x][tile.y] || {};
+	if (team in memo[tile.x][tile.y]) {
+		return memo[tile.x][tile.y];
+	}
 
-	var getTilePosition = {};
-	getTilePosition[HUMAN_TEAM] = function(t) { return t.x; };
-	getTilePosition[OGRE_TEAM] = function(t) { return t.y; };
+	var result = 0;
 
 	var visited = makeGrid.call(this);
-	for (var y=0;y<GRID_HEIGHT;y++) {
-		for (var x=0;x<GRID_WIDTH;x++) {
-			var tile = this.getTile(x, y);
-			var owner = tile.owner;
-			if (newTile.x == x && newTile.y == y) {
-			    owner = newTeam;
-			}
-			if (visited[x][y] === true ||
-				owner === null) {
-				continue;
-			}
-			var minPos = getTilePosition[owner](tile);
-			var maxPos = minPos;
-			var q = [tile];
-			while (q.length > 0) {
-				var t = q.shift();
-				var tOwner = t.owner;
-				if (newTile.x == t.x && newTile.y == t.y) {
-				    tOwner = newTeam;
-				}
-				if (visited[t.x][t.y] === true ||
-					tOwner !== owner) {
-					continue;
-				}
-				visited[t.x][t.y] = true;
-				var pos = getTilePosition[tOwner](t);
-				minPos = Math.min(minPos, pos);
-				maxPos = Math.max(maxPos, pos);
-				result[tOwner] = Math.max(result[tOwner], 1+maxPos-minPos);
-				for (var i=0;i<t.neighbors.length;i++) {
-					q.push(t.neighbors[i]);
-				}
+	var minPos = getTilePosition[team](tile);
+	var maxPos = minPos;
+	var q = [tile];
+	while (q.length > 0) {
+		var t = q.shift();
+		visited[t.x][t.y] = true;
+		var pos = getTilePosition[team](t);
+		minPos = Math.min(minPos, pos);
+		maxPos = Math.max(maxPos, pos);
+		result = Math.max(result, 1+maxPos-minPos);
+		for (var i=0;i<t.neighbors.length;i++) {
+			var tn = t.neighbors[i];
+			if (visited[tn.x][tn.y] !== true &&
+				(tn.owner === team || (tn.x === tile.x && tn.y === tile.y))) {
+					q.push(tn);
 			}
 		}
 	}
 
-	return result[newTeam];
+	memo[tile.x][tile.y][team] = result;
+	return result;
 }
 
-// Number of connected segments around a tile for a given team.
-// An example (a = humans, b = ogres, 0 = null, t = tile param):
-// a a 0
-// b t 0
-// 0 b a
-// In this case, the tile t is the param passed to the function.
-// The team param could be either a or b (humans or ogres).
-// If team is a, then the result is 2.  The two a's in the top
-// row form one segment, and they are not connected to the a in
-// the bottom left corner, so that one forms its own segment.
-// If team is b, then the result is 1.  The two b's in the
-// left-middle and bottom-middle are connected (by the definition
-// given by the game's rules, diagonal tiles are considered adjacent),
-// forming one segment.
-function numSegmentsAroundTile(tile, team) {
-	var routeSegment = [];
-	var numRouteSegments = 0;
-	var curRouteSegment = -1;
-	for (var i=0;i<tile.neighbors.length;i++) {
-		if (tile.neighbors[i].owner !== team ||
-			routeSegment[i] !== undefined) {
+// Number of opportunities remaining to connect two segments across
+// a row/column given by {@param tile}.  Consider:
+// a b b
+// 0 0 a
+// b b a
+// In this case, there is 1 tile (1,1) which connects team A's tiles
+// and 2 tiles (0,1 and 1,1) which connect team B's.
+// This function always assumes it is being called for MY_TEAM.
+function connectionOpportunities(tile, myLongestPath) {
+	return 3;
+	var result = 0;
+	var numEnemyCells = 0;
+
+	var x=tile.x;
+	var y=tile.y;
+	var newPos = addTilePosition[ENEMY_TEAM](x,y,-1);
+	x = newPos['x']; y = newPos['y'];
+	var n=0;
+	while (x>=0 && y>=0 && n<1) {
+		n++;
+		var t = this.getTile(x,y);
+		if (t.owner === ENEMY_TEAM) {
+			numEnemyCells++;
+		}
+		if (t.owner !== null) {
 			continue;
 		}
-		curRouteSegment = numRouteSegments;
-		numRouteSegments++;
-		var visited = {};
-		var q = [tile.neighbors[i]];
-		while (q.length > 0) {
-			var t = q.shift();
-			if (visited[t] === true || 
-				t.owner !== tile.owner) {
-				continue;
-			}
-			visited[t] = true;
-			routeSegment[i] = curRouteSegment;
-			for (var j=0;j<tile.neighbors.length;j++) {
-				if (this.tilesAreConnected(t, tile.neighbors[j])) {
-					q.push(tile.neighbors[j]);
-				}
-			}
+		if (pathLengthIfTileConnects.call(this, t, MY_TEAM) > myLongestPath) {
+			result++;
 		}
+		newPos = addTilePosition[ENEMY_TEAM](x,y,-1);
+		x = newPos['x']; y = newPos['y'];
 	}
 
-	return numRouteSegments;
+	x=tile.x;
+	y=tile.y;
+	newPos = addTilePosition[ENEMY_TEAM](x,y,1);
+	x = newPos['x']; y = newPos['y'];
+	n=0;
+	while (x<GRID_WIDTH && y<GRID_HEIGHT && n<1) {
+		var t = this.getTile(x,y);
+		if (t.owner === ENEMY_TEAM) {
+			numEnemyCells++;
+		}
+		if (t.owner !== null) {
+			continue;
+		}
+		if (pathLengthIfTileConnects.call(this, t, MY_TEAM) > myLongestPath) {
+			result++;
+		}
+		newPos = addTilePosition[ENEMY_TEAM](x,y,1);
+		x = newPos['x']; y = newPos['y'];
+	}
+
+	if (numEnemyCells === 0) {
+		return TARGET_LENGTH[MY_TEAM];
+	}
+
+	return 1+result;
 }
 
-function tilesAreConnected(tileA, tileB) {
-	return (Math.abs(tileA.x - tileB.x) <= 1) && (Math.abs(tileA.y - tileB.y) <= 1);
-}
+
+///// MAIN /////
 
 	var goldRemaining = getGoldAmounts.call(this);
 	var longestPaths = getLongestPaths.call(this);
 	var myLongestPath = longestPaths[MY_TEAM];
+	var myLongestPotentialPath = myLongestPath;
 	var enemyLongestPath = longestPaths[ENEMY_TEAM];
-	this.debug("myLongestPath: " + myLongestPath);
-	this.debug("enemyLongestPath: " + enemyLongestPath);
+	var enemyLongestPotentialPath = enemyLongestPath;
 
 	// Get all relevant positional data
 	var allBaseScores = getBaseTileScores.call(this);
@@ -326,12 +316,13 @@ function tilesAreConnected(tileA, tileB) {
 		friendlyNewPathLengths[i] = pathLengthIfTileConnects.call(this, tile, MY_TEAM);
 		enemyNewPathLengths[i] = pathLengthIfTileConnects.call(this, tile, ENEMY_TEAM);
 	}
-	this.debug(friendlyNewPathLengths);
 
 	// Calculate desire (between 0 and 1)
 	// No idea how yet
 	var myDesire = [];
 	var enemyDesire = [];
+	var connectionOpportunityOverride = 0;
+	var numConnectionOpportunities = 0;
 
 	for (var i=0;i<tilesThisTurn.length;i++) {
 	    if (tilesThisTurn[i].owner !== null) {
@@ -342,6 +333,12 @@ function tilesAreConnected(tileA, tileB) {
 		myDesire[i] = (0.1*baseScores[i]) + (0.2*friendlyProximityScores[i]);
 		if (friendlyNewPathLengths[i] > myLongestPath) {
 		    myDesire[i] += 0.7*(friendlyNewPathLengths[i]/7);
+		    myLongestPotentialPath = Math.max(myLongestPotentialPath, friendlyNewPathLengths[i]);
+		    if (friendlyNewPathLengths[i] >= 3) {
+			    connectionOpportunityOverride = 1;
+		    	var localNumConnectionOpportunities = connectionOpportunities.call(this, tilesThisTurn[i], myLongestPath);
+		    	numConnectionOpportunities = Math.max(numConnectionOpportunities, localNumConnectionOpportunities);
+		    }
 		}
 		if (friendlyNewPathLengths[i] == TARGET_LENGTH[MY_TEAM]) {
 			myDesire[i] = 1;
@@ -350,11 +347,15 @@ function tilesAreConnected(tileA, tileB) {
 		enemyDesire[i] = (0.1*baseScores[i]) + (0.2*enemyProximityScores[i]);
 		if (enemyNewPathLengths[i] > enemyLongestPath) {
 			enemyDesire[i] += 0.7*(enemyNewPathLengths[i]/7);
+			enemyLongestPotentialPath = Math.max(enemyLongestPotentialPath, enemyNewPathLengths[i]);
 		}
 		if (enemyNewPathLengths[i] == TARGET_LENGTH[ENEMY_TEAM]) {
 			enemyDesire[i] = 1;
 		}
 	}
+
+	this.debug("myLongestPath(" + myLongestPath + ") potential(" + myLongestPotentialPath + ")"));
+	this.debug("enemyLongestPath(" + enemyLongestPath + ") potential(" + enemyLongestPotentialPath + ")"));
 
 	var myDesiredTile = null;
 	var myMaxDesire = 0;
@@ -366,7 +367,7 @@ function tilesAreConnected(tileA, tileB) {
 			myDesiredIndex = i;
 		}
 	}
-	this.debug("My desire: " + myDesire);
+	//this.debug("My desire: " + myDesire);
 
 	var enemyDesiredTile = null;
 	var enemyMaxDesire = 0;
@@ -378,24 +379,48 @@ function tilesAreConnected(tileA, tileB) {
 			enemyDesiredIndex = i;
 		}
 	}
-	this.debug("Enemy desire: " + enemyDesire);
+	//this.debug("Enemy desire: " + enemyDesire);
 
-	var enemyBid = 0;
-    if (myDesiredTile !== null) {
-	    this.debug("x(" + myDesiredTile.x + ") y(" + myDesiredTile.y + ") base(" + baseScores[myDesiredIndex] + ") prox(" + friendlyProximityScores[myDesiredIndex] + ") len(" + friendlyNewPathLengths[myDesiredIndex] + ")");
-	    var enemyMinBid = 1; //TODO: goldRemaining[ENEMY_TEAM] / nullTilesRemaining;
-	    var enemyMaxBid = goldRemaining[ENEMY_TEAM] / (TARGET_LENGTH[ENEMY_TEAM] - enemyLongestPath);
-	    enemyBid = enemyMinBid + ((enemyMaxBid - enemyMinBid) * enemyMaxDesire);
-    } else {
-        this.debug("wants no tiles");
-    }
+    var enemyMinBid = 1; //TODO: goldRemaining[ENEMY_TEAM] / nullTilesRemaining;
+    var enemyMaxBid = goldRemaining[ENEMY_TEAM] / (TARGET_LENGTH[ENEMY_TEAM] - enemyLongestPotentialPath);
+    var enemyBid = enemyMinBid + ((enemyMaxBid - enemyMinBid) * enemyMaxDesire);
+
 	var myMinBid = 1; //TODO: goldRemaining[MY_TEAM] / nullTilesRemaining;
 	var myMaxBid = goldRemaining[MY_TEAM] / (GRID_WIDTH - myLongestPath);
 	var myBid = myMinBid + ((myMaxBid - myMinBid) * myMaxDesire);
 	if (enemyBid > myBid) {
+		this.debug("Denying enemy (enemyBid=" + enemyBid + ", myBid=" + myBid + ")");
 		myBid = enemyBid + 1;
+	}
+
+	if (myLongestPath===myLongestPotentialPath && enemyLongestPath===enemyLongestPotentialPath) {
+	    if (myLongestPath >= 6) {
+		    this.debug("Conserving money to finish");
+		    myBid = 0;
+	    } else if (goldRemaining[MY_TEAM] < goldRemaining[ENEMY_TEAM] &&
+	               myMaxDesire < 0.5 && enemyMaxDesire < 0.5) {
+	        this.debug("Conserving money on low value tiles while behind");
+	        myBid = Math.min(myBid, (0.01 * goldRemaining[MY_TEAM]));
+	    } else if (goldRemaining[MY_TEAM] > goldRemaining[ENEMY_TEAM]) {
+	        var goldAdvantage = goldRemaining[MY_TEAM] - goldRemaining[ENEMY_TEAM];
+	        this.debug("Conserving to maintain gold advantage");
+	        myBid = Math.min(myBid, goldAdvantage/3);
+	    }
+	}
+	this.debug("connectionOpportunityOverride(" + connectionOpportunityOverride + ") numConnectionOpportunities(" + numConnectionOpportunities + ")");
+	if (connectionOpportunityOverride !== 0 && numConnectionOpportunities > 0) {
+		this.debug("Connection opportunity override enabled");
+		var connectionBid = (0.9 * (myLongestPotentialPath/7) * goldRemaining[MY_TEAM]) / numConnectionOpportunities;
+		if (connectionBid > myBid) {
+			this.debug("Overriding previous bid for connection (" + connectionBid + " > " + myBid + ")");
+			myBid = connectionBid;
+		}
+	}
+	if (myBid > goldRemaining[ENEMY_TEAM]) {
+		this.debug("Adjusting down to enemy max");
+		myBid = goldRemaining[ENEMY_TEAM]+1;
 	}
 	this.debug("bid: " + myBid + " tile: " + myDesiredTile);
 	return {gold: myBid, desiredTile: myDesiredTile};
 
-	// Add enemy denial
+	// Add better enemy denial
