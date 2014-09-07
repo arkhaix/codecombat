@@ -2,8 +2,8 @@
 var OGRE_TEAM = 'ogres';
 var HUMAN_TEAM = 'humans';
 
-var MY_TEAM = OGRE_TEAM;
-var ENEMY_TEAM = HUMAN_TEAM;
+var MY_TEAM = HUMAN_TEAM;
+var ENEMY_TEAM = OGRE_TEAM;
 
 var INITIAL_GOLD = 128;
 
@@ -25,8 +25,8 @@ getTilePosition[HUMAN_TEAM] = function(t) { return t.x; };
 getTilePosition[OGRE_TEAM] = function(t) { return t.y; };
 
 var addTilePosition = {};
-addTilePosition[HUMAN_TEAM] = function(x,y,i) { return {'x':x+i, 'y':y } };
-addTilePosition[OGRE_TEAM] = function(x,y,i) { return {'x':x, 'y':y+i } };
+addTilePosition[HUMAN_TEAM] = function(x,y,i) { return {'x':x+i, 'y':y }; };
+addTilePosition[OGRE_TEAM] = function(x,y,i) { return {'x':x, 'y':y+i }; };
 
 
 function makeGrid() {
@@ -86,6 +86,7 @@ function getBaseTileScores() {
 	return result;
 }
 
+// Helper for getTileProximityScores.
 function addProximityScores(tile, result) {
 	var team = tile.owner;
 	if (team === null) {
@@ -234,7 +235,6 @@ function pathLengthIfTileConnects(tile, team) {
 // and 2 tiles (0,1 and 1,1) which connect team B's.
 // This function always assumes it is being called for MY_TEAM.
 function connectionOpportunities(tile, myLongestPath) {
-	return 3;
 	var result = 0;
 	var numEnemyCells = 0;
 
@@ -265,6 +265,7 @@ function connectionOpportunities(tile, myLongestPath) {
 	x = newPos['x']; y = newPos['y'];
 	n=0;
 	while (x<GRID_WIDTH && y<GRID_HEIGHT && n<1) {
+		n++;
 		var t = this.getTile(x,y);
 		if (t.owner === ENEMY_TEAM) {
 			numEnemyCells++;
@@ -301,7 +302,6 @@ function connectionOpportunities(tile, myLongestPath) {
 	var allFriendlyProximityScores = getTileProximityScores.call(this, MY_TEAM);
 	var allEnemyProximityScores = getTileProximityScores.call(this, ENEMY_TEAM);
 
-	// Filter positional data to just the tiles being bid on this turn
 	var tilesThisTurn = this.tileGroups[tileGroupLetter];
 	var baseScores = [];
 	var friendlyProximityScores = [];
@@ -318,7 +318,6 @@ function connectionOpportunities(tile, myLongestPath) {
 	}
 
 	// Calculate desire (between 0 and 1)
-	// No idea how yet
 	var myDesire = [];
 	var enemyDesire = [];
 	var connectionOpportunityOverride = 0;
@@ -332,7 +331,7 @@ function connectionOpportunities(tile, myLongestPath) {
 
 		myDesire[i] = (0.1*baseScores[i]) + (0.2*friendlyProximityScores[i]);
 		if (friendlyNewPathLengths[i] > myLongestPath) {
-		    myDesire[i] += 0.7*(friendlyNewPathLengths[i]/7);
+		    myDesire[i] += 0.7*(friendlyNewPathLengths[i]/TARGET_LENGTH[MY_TEAM]);
 		    myLongestPotentialPath = Math.max(myLongestPotentialPath, friendlyNewPathLengths[i]);
 		    if (friendlyNewPathLengths[i] >= 3) {
 			    connectionOpportunityOverride = 1;
@@ -346,7 +345,7 @@ function connectionOpportunities(tile, myLongestPath) {
 
 		enemyDesire[i] = (0.1*baseScores[i]) + (0.2*enemyProximityScores[i]);
 		if (enemyNewPathLengths[i] > enemyLongestPath) {
-			enemyDesire[i] += 0.7*(enemyNewPathLengths[i]/7);
+			enemyDesire[i] += 0.7*(enemyNewPathLengths[i]/TARGET_LENGTH[ENEMY_TEAM]);
 			enemyLongestPotentialPath = Math.max(enemyLongestPotentialPath, enemyNewPathLengths[i]);
 		}
 		if (enemyNewPathLengths[i] == TARGET_LENGTH[ENEMY_TEAM]) {
@@ -354,8 +353,8 @@ function connectionOpportunities(tile, myLongestPath) {
 		}
 	}
 
-	this.debug("myLongestPath(" + myLongestPath + ") potential(" + myLongestPotentialPath + ")"));
-	this.debug("enemyLongestPath(" + enemyLongestPath + ") potential(" + enemyLongestPotentialPath + ")"));
+	this.debug("myLongestPath(" + myLongestPath + ") potential(" + myLongestPotentialPath + ")");
+	this.debug("enemyLongestPath(" + enemyLongestPath + ") potential(" + enemyLongestPotentialPath + ")");
 
 	var myDesiredTile = null;
 	var myMaxDesire = 0;
@@ -386,15 +385,19 @@ function connectionOpportunities(tile, myLongestPath) {
     var enemyBid = enemyMinBid + ((enemyMaxBid - enemyMinBid) * enemyMaxDesire);
 
 	var myMinBid = 1; //TODO: goldRemaining[MY_TEAM] / nullTilesRemaining;
-	var myMaxBid = goldRemaining[MY_TEAM] / (GRID_WIDTH - myLongestPath);
+	var myMaxBid = goldRemaining[MY_TEAM] / (TARGET_LENGTH[MY_TEAM] - myLongestPotentialPath);
 	var myBid = myMinBid + ((myMaxBid - myMinBid) * myMaxDesire);
-	if (enemyBid > myBid) {
+	if (enemyBid > myBid && enemyLongestPotentialPath>enemyLongestPath) {
 		this.debug("Denying enemy (enemyBid=" + enemyBid + ", myBid=" + myBid + ")");
 		myBid = enemyBid + 1;
+		if (enemyLongestPotentialPath < TARGET_LENGTH[ENEMY_TEAM]) {
+			myBid = Math.min(myBid, INITIAL_GOLD/TARGET_LENGTH[MY_TEAM]);
+		}
 	}
 
+	// More conservative bidding strategies if neither side can extend their path this turn
 	if (myLongestPath===myLongestPotentialPath && enemyLongestPath===enemyLongestPotentialPath) {
-	    if (myLongestPath >= 6) {
+	    if (myLongestPath >= TARGET_LENGTH[MY_TEAM]/1.5) {
 		    this.debug("Conserving money to finish");
 		    myBid = 0;
 	    } else if (goldRemaining[MY_TEAM] < goldRemaining[ENEMY_TEAM] &&
@@ -404,23 +407,31 @@ function connectionOpportunities(tile, myLongestPath) {
 	    } else if (goldRemaining[MY_TEAM] > goldRemaining[ENEMY_TEAM]) {
 	        var goldAdvantage = goldRemaining[MY_TEAM] - goldRemaining[ENEMY_TEAM];
 	        this.debug("Conserving to maintain gold advantage");
-	        myBid = Math.min(myBid, goldAdvantage/3);
+	        myBid = Math.min(myBid, goldAdvantage/4);
 	    }
-	}
-	this.debug("connectionOpportunityOverride(" + connectionOpportunityOverride + ") numConnectionOpportunities(" + numConnectionOpportunities + ")");
-	if (connectionOpportunityOverride !== 0 && numConnectionOpportunities > 0) {
-		this.debug("Connection opportunity override enabled");
+	} else if (connectionOpportunityOverride !== 0 && numConnectionOpportunities > 0) {
+		this.debug("connectionOpportunityOverride(" + connectionOpportunityOverride + ") numConnectionOpportunities(" + numConnectionOpportunities + ")");
 		var connectionBid = (0.9 * (myLongestPotentialPath/7) * goldRemaining[MY_TEAM]) / numConnectionOpportunities;
 		if (connectionBid > myBid) {
 			this.debug("Overriding previous bid for connection (" + connectionBid + " > " + myBid + ")");
 			myBid = connectionBid;
 		}
 	}
+
+	// Never bid more than the enemy's remaining gold (+1)
 	if (myBid > goldRemaining[ENEMY_TEAM]) {
 		this.debug("Adjusting down to enemy max");
 		myBid = goldRemaining[ENEMY_TEAM]+1;
 	}
+
+	// Never bid more gold than we actually have
+	if (myBid > goldRemaining[MY_TEAM]) {
+		myBid = goldRemaining[MY_TEAM];
+	}
+
+	if (isNaN(myBid)) {
+		myBid = 0;
+	}
+
 	this.debug("bid: " + myBid + " tile: " + myDesiredTile);
 	return {gold: myBid, desiredTile: myDesiredTile};
-
-	// Add better enemy denial
